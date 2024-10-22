@@ -30,13 +30,18 @@ with col2:
         df = pd.read_excel(uploaded_file)
         sequences = []
 
-        # 显示序列列表并添加多选框
+
         st.subheader("选择序列进行分析:")
         for index, row in df.iterrows():
-            if "P" in row['物料名称']:
-                selected = st.checkbox(row['物料名称'])
-                if selected:
-                    sequences.append(row['物料名称'])
+            if pd.isna(row['物料名称']) or pd.isna(row['序列']):
+                st.warning(f"第 {index+1} 行数据不完整，跳过该行")
+                continue  # 跳过不完整的数据
+        
+            # 移除 "P" 的过滤条件，显示所有物料名称
+            selected = st.checkbox(row['物料名称'])
+            if selected:
+                sequences.append(row['物料名称'])
+
 
     
 
