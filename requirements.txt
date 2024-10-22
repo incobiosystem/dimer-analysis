@@ -2,3 +2,4 @@ streamlit
 primer3-py
 pandas
 biopython
+openpyxl
