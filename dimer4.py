@@ -50,7 +50,7 @@ with col3:
 # 开始分析按钮
     if st.button("Start analysis"):  # 可以调整按钮大小和样式
         if len(sequences) < 2:
-            st.warning(""Please select at least two sequences for analysis.")
+            st.warning("Please select at least two sequences for analysis.")
         else:
             dcP = {row['物料名称']: row['序列'] for index, row in df.iterrows() if row['物料名称'] in sequences}
             results = []
