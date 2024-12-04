@@ -21,17 +21,17 @@ with col1:
 
 # 中间列：上传文件和选择序列
 with col2:
-    st.subheader("上传需要分析的Excel文件:")
-    uploaded_file = st.file_uploader("选择文件", type=["xlsx"])
+    st.subheader("Upload the Excel file that needs to be analyzed")
+    uploaded_file = st.file_uploader("Select the file to be analyzed", type=["xlsx"])
     # 输入 Tm 值
-    tmin = st.number_input("本次分析将输出高于以下温度的dimer (默认10℃):", value=10.0)
+    tmin = st.number_input("This analysis will output dimers with temperatures above the following (default 10°C)", value=10.0)
 
     if uploaded_file is not None:
         df = pd.read_excel(uploaded_file)
         sequences = []
 
 
-        st.subheader("选择序列进行分析:")
+        st.subheader(""Select the sequence for analysis:")
         for index, row in df.iterrows():
             if pd.isna(row['物料名称']) or pd.isna(row['序列']):
                 st.warning(f"第 {index+1} 行数据不完整，跳过该行")
@@ -48,9 +48,9 @@ with col2:
         
 with col3:
 # 开始分析按钮
-    if st.button("开始分析"):  # 可以调整按钮大小和样式
+    if st.button("Start analysis"):  # 可以调整按钮大小和样式
         if len(sequences) < 2:
-            st.warning("请至少选择两个序列进行分析！")
+            st.warning(""Please select at least two sequences for analysis.")
         else:
             dcP = {row['物料名称']: row['序列'] for index, row in df.iterrows() if row['物料名称'] in sequences}
             results = []
