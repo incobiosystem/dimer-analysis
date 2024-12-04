@@ -15,8 +15,8 @@ with col1:
     logo_path = "logo.png"  # 确保logo文件名与路径正确
     if os.path.exists(logo_path):
         st.image(logo_path, width=300)  # 调整图片宽度
-    st.markdown("<h1 style='font-size: 40px;'>Dimer Analysis</h1>", unsafe_allow_html=True)  # 可调整标题字体大小
-    st.markdown("<h1 style='font-size: 20px;'>Incobiosystem</h5>", unsafe_allow_html=True)  # 可调整标题字体大小
+    st.markdown("<h1 style='font-size: 32px;'>Dimer Analysis</h1>", unsafe_allow_html=True)  # 可调整标题字体大小
+    st.markdown("<h1 style='font-size: 16px;'>Incobiosystem</h5>", unsafe_allow_html=True)  # 可调整标题字体大小
 
 
 # 中间列：上传文件和选择序列
