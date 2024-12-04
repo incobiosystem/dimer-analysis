@@ -31,7 +31,7 @@ with col2:
         sequences = []
 
 
-        st.subheader(""Select the sequence for analysis:")
+        st.subheader("Select the sequence for analysis:")
         for index, row in df.iterrows():
             if pd.isna(row['物料名称']) or pd.isna(row['序列']):
                 st.warning(f"第 {index+1} 行数据不完整，跳过该行")
