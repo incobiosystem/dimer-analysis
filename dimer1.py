@@ -1,51 +1,101 @@
-import streamlit as st
 import pandas as pd
-import primer3
-from Bio import Seq
+import itertools
+import streamlit as st
 
-# 文件上传
-uploaded_file = st.file_uploader("选择Excel文件", type=["xlsx"])
+# 简并碱基与其对应的可能碱基的映射
+degenerate_bases = {
+    'R': ['A', 'G'],
+    'Y': ['C', 'T'],
+    'S': ['G', 'C'],
+    'W': ['A', 'T'],
+    'K': ['G', 'T'],
+    'M': ['A', 'C'],
+    'B': ['C', 'G', 'T'],
+    'D': ['A', 'G', 'T'],
+    'H': ['A', 'C', 'T'],
+    'V': ['A', 'C', 'G'],
+    'N': ['A', 'C', 'G', 'T']
+}
 
-# Tm 值输入
-tmin = st.number_input("本次分析将输出高于以下温度的dimer (默认10℃):", value=10.0)
+def expand_degenerate_sequence(sequence):
+    """
+    展开包含简并碱基的引物序列，返回所有可能的组合。
+    """
+    while any(base in degenerate_bases for base in sequence):
+        replacement_options = []
 
-# 处理文件
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-    sequences = df['物料名称'].unique().tolist()  # 获取物料名称的唯一值
-    selected_sequences = st.multiselect("选择序列进行分析:", sequences)
-
-    # 开始分析按钮
-    if st.button("开始分析"):
-        if len(selected_sequences) < 2:
-            st.warning("请至少选择两个序列进行分析！")
-        else:
-            dcP = {row['物料名称']: row['序列'] for _, row in df.iterrows() if row['物料名称'] in selected_sequences}
-
-            results = []
-            for i in range(len(selected_sequences)):
-                for j in range(i + 1, len(selected_sequences)):
-                    seq1 = dcP[selected_sequences[i]]
-                    seq2 = dcP[selected_sequences[j]]
-
-                    diTm = primer3.calc_heterodimer_tm(seq1, seq2)
-                    if diTm > tmin:
-                        dime = primer3.calc_heterodimer(seq1, seq2, output_structure=True)
-                        results.append({
-                            'seq1': selected_sequences[i],
-                            'seq2': selected_sequences[j],
-                            'Tm': diTm,
-                            '结构': dime.ascii_structure
-                        })
-
-            # 按照Tm值排序
-            sorted_results = sorted(results, key=lambda x: x['Tm'], reverse=True)
-
-            # 显示结果
-            if sorted_results:
-                st.subheader("分析结果:")
-                for res in sorted_results:
-                    st.write(f"**seq1:** {res['seq1']}, **seq2:** {res['seq2']}, **Tm:** {res['Tm']}")
-                    st.text(f"**结构:**\n{res['结构']}\n")
+        for base in sequence:
+            if base in degenerate_bases:
+                replacement_options.append(degenerate_bases[base])
             else:
-                st.write("没有符合条件的结果！")
+                replacement_options.append([base])  # 普通碱基，直接保留
+
+        sequence = [''.join(comb) for comb in itertools.product(*replacement_options)]
+    return sequence
+
+def analyze_degenerate_sequence(sequence):
+    """
+    分析序列中简并碱基的数量，以及每个简并碱基代表的可能碱基种类。
+    """
+    degenerate_count = 0
+    degenerate_details = {}
+
+    for base in sequence:
+        if base in degenerate_bases:
+            degenerate_count += 1
+            degenerate_details[base] = degenerate_bases[base]
+
+    return degenerate_count, degenerate_details
+
+def process_sequences(uploaded_file):
+    """
+    处理上传的 Excel 文件，输出处理后的结果。
+    """
+    df = pd.read_excel(uploaded_file)
+
+    # 存储输出数据
+    output_data = []
+
+    # 遍历每一行物料名称和序列
+    for _, row in df.iterrows():
+        material_name = row['物料名称']
+        sequence = row['序列']
+
+        # 展开所有可能的序列组合
+        expanded_sequences = expand_degenerate_sequence([sequence])
+
+        # 为每个生成的序列创建新的物料名称
+        for i, seq in enumerate(expanded_sequences, start=1):
+            new_material_name = f"{material_name}-{i}"
+            output_data.append([new_material_name, seq])
+
+    # 将结果输出为 DataFrame
+    output_df = pd.DataFrame(output_data, columns=['物料名称', '序列'])
+    return output_df
+
+def main():
+    st.title('引物序列简并碱基展开工具')
+
+    # 文件上传控件
+    uploaded_file = st.file_uploader("上传包含序列的Excel文件", type="xlsx")
+
+    if uploaded_file is not None:
+        # 处理上传的文件
+        output_df = process_sequences(uploaded_file)
+        
+        # 显示处理后的 DataFrame
+        st.write(output_df)
+
+        # 允许用户下载处理后的 Excel 文件
+        output_excel = 'output_sequences.xlsx'
+        output_df.to_excel(output_excel, index=False)
+        
+        st.download_button(
+            label="下载处理后的文件",
+            data=open(output_excel, "rb").read(),
+            file_name=output_excel,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+if __name__ == "__main__":
+    main()
