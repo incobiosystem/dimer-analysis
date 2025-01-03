@@ -74,26 +74,32 @@ def process_sequences(uploaded_file):
     return output_df
 
 def main():
-    st.title('引物序列简并碱基转化工具')
+    st.title('引物序列简并碱基展开工具')
 
     # 文件上传控件
     uploaded_file = st.file_uploader("上传包含序列的Excel文件", type="xlsx")
 
     if uploaded_file is not None:
+        # 记录上传的文件名
+        original_filename = uploaded_file.name
+        
         # 处理上传的文件
         output_df = process_sequences(uploaded_file)
         
         # 显示处理后的 DataFrame
         st.write(output_df)
 
-        # 允许用户下载处理后的 Excel 文件
-        output_excel = 'output_sequences.xlsx'
-        output_df.to_excel(output_excel, index=False)
+        # 获取输出文件名，添加“（已转化）”后缀
+        output_filename = original_filename.replace('.xlsx', '（已转化）.xlsx')
         
+        # 将处理后的结果保存为新的 Excel 文件
+        output_df.to_excel(output_filename, index=False)
+        
+        # 提供下载按钮
         st.download_button(
             label="下载处理后的文件",
-            data=open(output_excel, "rb").read(),
-            file_name=output_excel,
+            data=open(output_filename, "rb").read(),
+            file_name=output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
