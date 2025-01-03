@@ -21,17 +21,17 @@ def expand_degenerate_sequence(sequence):
     """
     展开包含简并碱基的引物序列，返回所有可能的组合。
     """
-    while any(base in degenerate_bases for base in sequence):
-        replacement_options = []
+    # 生成一个列表，包含序列中每个碱基对应的替换选项
+    replacement_options = []
+    for base in sequence:
+        if base in degenerate_bases:
+            replacement_options.append(degenerate_bases[base])
+        else:
+            replacement_options.append([base])  # 普通碱基，直接保留
 
-        for base in sequence:
-            if base in degenerate_bases:
-                replacement_options.append(degenerate_bases[base])
-            else:
-                replacement_options.append([base])  # 普通碱基，直接保留
-
-        sequence = [''.join(comb) for comb in itertools.product(*replacement_options)]
-    return sequence
+    # 使用 itertools.product 生成所有组合
+    expanded_sequences = [''.join(comb) for comb in itertools.product(*replacement_options)]
+    return expanded_sequences
 
 def analyze_degenerate_sequence(sequence):
     """
@@ -62,7 +62,7 @@ def process_sequences(uploaded_file):
         sequence = row['序列']
 
         # 展开所有可能的序列组合
-        expanded_sequences = expand_degenerate_sequence([sequence])
+        expanded_sequences = expand_degenerate_sequence(sequence)
 
         # 为每个生成的序列创建新的物料名称
         for i, seq in enumerate(expanded_sequences, start=1):
@@ -74,7 +74,7 @@ def process_sequences(uploaded_file):
     return output_df
 
 def main():
-    st.title('引物序列简并碱基展开工具')
+    st.title('引物序列简并碱基转化工具')
 
     # 文件上传控件
     uploaded_file = st.file_uploader("上传包含序列的Excel文件", type="xlsx")
