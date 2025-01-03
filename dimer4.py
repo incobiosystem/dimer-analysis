@@ -18,7 +18,6 @@ with col1:
     st.markdown("<h1 style='font-size: 32px;'>Dimer Analysis</h1>", unsafe_allow_html=True)  # 可调整标题字体大小
     st.markdown("<h1 style='font-size: 16px;'>Incobiosystem</h5>", unsafe_allow_html=True)  # 可调整标题字体大小
 
-
 # 中间列：上传文件和选择序列
 with col2:
     st.subheader("Upload the Excel file that needs to be analyzed")
@@ -29,7 +28,6 @@ with col2:
     if uploaded_file is not None:
         df = pd.read_excel(uploaded_file)
         sequences = []
-
 
         st.subheader("Select the sequence for analysis:")
         for index, row in df.iterrows():
@@ -42,12 +40,8 @@ with col2:
             if selected:
                 sequences.append(row['物料名称'])
 
-
-    
-
-        
 with col3:
-# 开始分析按钮
+    # 开始分析按钮
     if st.button("Start analysis"):  # 可以调整按钮大小和样式
         if len(sequences) < 2:
             st.warning("Please select at least two sequences for analysis.")
@@ -57,8 +51,19 @@ with col3:
 
             # 进行dimer分析
             for i in range(len(sequences)):
+                seq1 = dcP[sequences[i]]
+                # 与自身序列做dimer分析
+                diTm_self = primer3.calc_heterodimer_tm(seq1, seq1)
+                if diTm_self > tmin:
+                    dime_self = primer3.calc_heterodimer(seq1, seq1, output_structure=True)
+                    results.append({
+                        'seq1': sequences[i],
+                        'seq2': sequences[i],
+                        'Tm': diTm_self,
+                        '结构': dime_self.ascii_structure
+                    })
+
                 for j in range(i + 1, len(sequences)):
-                    seq1 = dcP[sequences[i]]
                     seq2 = dcP[sequences[j]]
                     diTm = primer3.calc_heterodimer_tm(seq1, seq2)
 
@@ -71,10 +76,10 @@ with col3:
                             '结构': dime.ascii_structure
                         })
 
-                # 按Tm值排序结果
+            # 按Tm值排序结果
             sorted_results = sorted(results, key=lambda x: x['Tm'], reverse=True)
 
-                # 结果展示
+            # 结果展示
             st.subheader("分析结果:")
             search_query = st.text_input("搜索结果:")
 
@@ -83,5 +88,5 @@ with col3:
                     st.write(f"seq1: {res['seq1']}, seq2: {res['seq2']}, Tm: {res['Tm']}")
                     st.write(f"结构:\n```\n{res['结构']}\n```")
 
-# 右侧列：结果展示区（可以根据需求修改）
+    # 右侧列：结果展示区（可以根据需求修改）
     st.empty()  # 可以在此添加更多内容
