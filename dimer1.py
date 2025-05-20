@@ -58,8 +58,8 @@ def process_sequences(uploaded_file):
 
     # 遍历每一行物料名称和序列
     for _, row in df.iterrows():
-        material_name = row['name']
-        sequence = row['sequence']
+        material_name = row['物料名称']
+        sequence = row['序列']
 
         # 展开所有可能的序列组合
         expanded_sequences = expand_degenerate_sequence(sequence)
@@ -89,16 +89,19 @@ def main():
         # 显示处理后的 DataFrame
         st.write(output_df)
 
-        # 获取输出文件名，添加“（已转化）”后缀
+        # 获取输出文件名，添加"（已转化）"后缀
         output_filename = original_filename.replace('.xlsx', '（已转化）.xlsx')
         
-        # 将处理后的结果保存为新的 Excel 文件
-        output_df.to_excel(output_filename, index=False)
+        # 将DataFrame转换为Excel文件格式（在内存中）
+        import io
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            output_df.to_excel(writer, index=False)
         
         # 提供下载按钮
         st.download_button(
             label="下载处理后的文件",
-            data=open(output_filename, "rb").read(),
+            data=buffer.getvalue(),
             file_name=output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
