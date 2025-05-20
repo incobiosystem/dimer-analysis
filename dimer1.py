@@ -58,8 +58,8 @@ def process_sequences(uploaded_file):
 
     # 遍历每一行物料名称和序列
     for _, row in df.iterrows():
-        material_name = row['物料名称']
-        sequence = row['序列']
+        material_name = row['name']
+        sequence = row['sequence']
 
         # 展开所有可能的序列组合
         expanded_sequences = expand_degenerate_sequence(sequence)
