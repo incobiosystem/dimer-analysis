@@ -4,6 +4,90 @@ import primer3
 from Bio import Seq
 import os
 import math
+import itertools
+import io
+
+# 简并碱基与其对应的可能碱基的映射
+degenerate_bases = {
+    'R': ['A', 'G'],
+    'Y': ['C', 'T'],
+    'S': ['G', 'C'],
+    'W': ['A', 'T'],
+    'K': ['G', 'T'],
+    'M': ['A', 'C'],
+    'B': ['C', 'G', 'T'],
+    'D': ['A', 'G', 'T'],
+    'H': ['A', 'C', 'T'],
+    'V': ['A', 'C', 'G'],
+    'N': ['A', 'C', 'G', 'T']
+}
+
+def expand_degenerate_sequence(sequence):
+    """
+    展开包含简并碱基的引物序列，返回所有可能的组合。
+    """
+    # 生成一个列表，包含序列中每个碱基对应的替换选项
+    replacement_options = []
+    for base in sequence:
+        if base in degenerate_bases:
+            replacement_options.append(degenerate_bases[base])
+        else:
+            replacement_options.append([base])  # 普通碱基，直接保留
+
+    # 使用 itertools.product 生成所有组合
+    expanded_sequences = [''.join(comb) for comb in itertools.product(*replacement_options)]
+    return expanded_sequences
+
+def analyze_degenerate_sequence(sequence):
+    """
+    分析序列中简并碱基的数量，以及每个简并碱基代表的可能碱基种类。
+    """
+    degenerate_count = 0
+    degenerate_details = {}
+
+    for base in sequence:
+        if base in degenerate_bases:
+            degenerate_count += 1
+            degenerate_details[base] = degenerate_bases[base]
+
+    return degenerate_count, degenerate_details
+
+def process_sequences(df):
+    """
+    处理DataFrame中的序列，展开简并碱基。
+    """
+    # 存储输出数据
+    output_data = []
+
+    # 遍历每一行name和sequence
+    for _, row in df.iterrows():
+        if pd.isna(row['name']) or pd.isna(row['sequence']):
+            continue  # 跳过不完整的数据
+            
+        material_name = row['name']
+        sequence = row['sequence']
+        
+        # 检查序列是否包含简并碱基
+        has_degenerate = any(base in degenerate_bases for base in sequence)
+        
+        if has_degenerate:
+            # 展开所有可能的序列组合
+            expanded_sequences = expand_degenerate_sequence(sequence)
+            
+            # 为每个生成的序列创建新的物料名称
+            for i, seq in enumerate(expanded_sequences, start=1):
+                new_material_name = f"{material_name}-{i}"
+                output_data.append([new_material_name, seq])
+        else:
+            # 如果没有简并碱基，直接添加原始序列
+            output_data.append([material_name, sequence])
+
+    # 将结果输出为 DataFrame
+    if output_data:
+        output_df = pd.DataFrame(output_data, columns=['name', 'sequence'])
+        return output_df
+    else:
+        return pd.DataFrame(columns=['name', 'sequence'])
 
 # Matthews 2004 DNA能量模型参数
 class ThermodynamicParams:
@@ -23,7 +107,8 @@ class ThermodynamicParams:
     }
 
 def adjust_thermodynamic_params(seq1, seq2, dg, tm, temp_c=37.0, dna_conc=50.0):
-    """根据Matthews 2004模型调整热力学参数
+    """
+    根据Matthews 2004模型调整热力学参数
     
     Args:
         seq1: 第一条序列
@@ -74,9 +159,10 @@ if 'analysis_done' not in st.session_state:
     st.session_state.analysis_done = False
     st.session_state.sorted_results = []
     st.session_state.sequences = []
+    st.session_state.expanded_df = None
 
 # 设置页面标题和图标
-st.set_page_config(page_title="Dimer Analysis", page_icon="🔬", layout="wide")  # 使用宽布局
+st.set_page_config(page_title="Dimer Analysis with Degenerate Bases", page_icon="🔬", layout="wide")  # 使用宽布局
 
 # 顶部布局，三列布局，带有间隔
 col1, col_spacer1, col2, col_spacer2, col3 = st.columns([1.5, 0.5, 3, 0.5, 4.5])  # 使用间隔列来调整间距
@@ -94,22 +180,23 @@ with col1:
   
     st.markdown("""
     **应用原理**:
-    1. 使用primer3计算二聚体结构和初始热力学参数
-    2. 应用Matthews 2004模型调整热力学参数
-    3. 考虑悬空端(dangling ends)对热力学参数的贡献
-    4. 计算调整后的Tm和ΔG值
+    1. 自动解析简并碱基并展开为所有可能的序列组合
+    2. 使用primer3计算二聚体结构和初始热力学参数
+    3. 应用Matthews 2004模型调整热力学参数
+    4. 考虑悬空端(dangling ends)对热力学参数的贡献
+    5. 计算调整后的Tm和ΔG值
     
     **参考文献**: Matthews et al. (2004) Biochemistry
     """)
 
 # 中间列：上传文件和选择序列
 with col2:
-    st.subheader("Upload the Excel file that needs to be analyzed")
-    uploaded_file = st.file_uploader("Select the file to be analyzed", type=["xlsx"])
+    st.subheader("上传需要分析的Excel文件")
+    uploaded_file = st.file_uploader("选择要分析的文件", type=["xlsx"])
     # 输入 deltaG 阈值
     dg_threshold = st.number_input("分析将输出deltaG小于以下值的二聚体 (默认 0 cal/mol)", value=0.0)
     # 输入模拟温度
-    simulation_temp = st.number_input("Simulation temperature for dimer calculation (°C)", value=37.0, help="温度会影响二聚体结构的形成和deltaG值，但不直接影响Tm值的计算。Tm是由热力学参数计算得出的熔解温度，而deltaG是在指定温度下的自由能变化。")
+    simulation_temp = st.number_input("二聚体计算的模拟温度 (°C)", value=37.0, help="温度会影响二聚体结构的形成和deltaG值，但不直接影响Tm值的计算。Tm是由热力学参数计算得出的熔解温度，而deltaG是在指定温度下的自由能变化。")
     # 输入离子浓度参数
     with st.expander("高级参数设置", expanded=False):
         mv_conc = st.number_input("单价离子浓度 (mM)", value=50.0)
@@ -119,15 +206,51 @@ with col2:
 
     if uploaded_file is not None:
         df = pd.read_excel(uploaded_file)
-        sequences = []
+        
+        # 检查列名是否为name和sequence，如果不是，尝试使用物料名称和序列
+        if 'name' not in df.columns or 'sequence' not in df.columns:
+            if '物料名称' in df.columns and '序列' in df.columns:
+                # 重命名列
+                df = df.rename(columns={'物料名称': 'name', '序列': 'sequence'})
+                st.info("已将列名'物料名称'和'序列'重命名为'name'和'sequence'")
+            else:
+                st.error("Excel文件必须包含'name'和'sequence'列或'物料名称'和'序列'列")
+                st.stop()
+        
+        # 处理简并碱基
+        if st.session_state.expanded_df is None:
+            with st.spinner("正在处理简并碱基..."):
+                expanded_df = process_sequences(df)
+                st.session_state.expanded_df = expanded_df
+                
+                # 显示简并碱基展开后的序列数量
+                original_count = len(df)
+                expanded_count = len(expanded_df)
+                if expanded_count > original_count:
+                    st.success(f"已将{original_count}个含简并碱基的序列展开为{expanded_count}个序列")
+                    
+                    # 提供下载展开后的序列
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        expanded_df.to_excel(writer, index=False)
+                    
+                    st.download_button(
+                        label="下载展开后的序列文件",
+                        data=buffer.getvalue(),
+                        file_name=uploaded_file.name.replace('.xlsx', '_expanded.xlsx'),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+        else:
+            expanded_df = st.session_state.expanded_df
 
-        st.subheader("Select the sequence for analysis:")
+        sequences = []
+        st.subheader("选择要分析的序列:")
         # 添加全选按钮
         select_all = st.checkbox("全选/取消全选")
         
         # 创建一个字典来存储所有有效的物料名称
         valid_materials = {}
-        for index, row in df.iterrows():
+        for index, row in expanded_df.iterrows():
             if pd.isna(row['name']) or pd.isna(row['sequence']):
                 st.warning(f"第 {index+1} 行数据不完整，跳过该行")
                 continue  # 跳过不完整的数据
@@ -141,75 +264,76 @@ with col2:
 
 with col3:
     # 开始分析按钮
-    if st.button("Start analysis"):  # 可以调整按钮大小和样式
+    if st.button("开始分析"):  # 可以调整按钮大小和样式
         if len(sequences) < 2:
-            st.warning("Please select at least two sequences for analysis.")
+            st.warning("请至少选择两个序列进行分析。")
         else:
             # 保存选择的序列到session_state
             st.session_state.sequences = sequences.copy()
             
-            dcP = {row['name']: row['sequence'] for index, row in df.iterrows() if row['name'] in sequences}
+            dcP = {row['name']: row['sequence'] for index, row in expanded_df.iterrows() if row['name'] in sequences}
             results = []
 
             # 进行dimer分析
-            for i in range(len(sequences)):
-                seq1 = dcP[sequences[i]]
-                # 与自身序列做dimer分析
-                dime_self = primer3.calc_heterodimer(seq1, seq1, 
-                                                    mv_conc=mv_conc, 
-                                                    dv_conc=dv_conc, 
-                                                    dntp_conc=dntp_conc, 
-                                                    dna_conc=dna_conc, 
-                                                    temp_c=simulation_temp,
-                                                    output_structure=True)
-                if dime_self.dg < dg_threshold:
-                    # 计算自身二聚体的Tm值
-                    diTm_self = primer3.calc_heterodimer_tm(seq1, seq1, 
-                                                          mv_conc=mv_conc, 
-                                                          dv_conc=dv_conc, 
-                                                          dntp_conc=dntp_conc, 
-                                                          dna_conc=dna_conc)
-                    
-                    # 应用Matthews 2004模型调整热力学参数
-                    adjusted_dg, adjusted_tm = adjust_thermodynamic_params(
-                        seq1, seq1, dime_self.dg, diTm_self, simulation_temp, dna_conc)
-                    
-                    results.append({
-                        'seq1': sequences[i],
-                        'seq2': sequences[i],
-                        'Tm': adjusted_tm,
-                        'deltaG': adjusted_dg,
-                        '结构': dime_self.ascii_structure
-                    })
-
-                for j in range(i + 1, len(sequences)):
-                    seq2 = dcP[sequences[j]]
-                    # 计算两序列间二聚体的Tm值，不传入simulation_temp参数
-                    diTm = primer3.calc_heterodimer_tm(seq1, seq2, 
-                                                     mv_conc=mv_conc, 
-                                                     dv_conc=dv_conc, 
-                                                     dntp_conc=dntp_conc, 
-                                                     dna_conc=dna_conc)
-
-                    dimer = primer3.calc_heterodimer(seq1, seq2, 
-                                                      mv_conc=mv_conc, 
-                                                      dv_conc=dv_conc, 
-                                                      dntp_conc=dntp_conc, 
-                                                      dna_conc=dna_conc, 
-                                                      temp_c=simulation_temp,
-                                                      output_structure=True)
-                    if dimer.dg < dg_threshold:
+            with st.spinner("正在进行二聚体分析..."):
+                for i in range(len(sequences)):
+                    seq1 = dcP[sequences[i]]
+                    # 与自身序列做dimer分析
+                    dime_self = primer3.calc_heterodimer(seq1, seq1, 
+                                                        mv_conc=mv_conc, 
+                                                        dv_conc=dv_conc, 
+                                                        dntp_conc=dntp_conc, 
+                                                        dna_conc=dna_conc, 
+                                                        temp_c=simulation_temp,
+                                                        output_structure=True)
+                    if dime_self.dg < dg_threshold:
+                        # 计算自身二聚体的Tm值
+                        diTm_self = primer3.calc_heterodimer_tm(seq1, seq1, 
+                                                              mv_conc=mv_conc, 
+                                                              dv_conc=dv_conc, 
+                                                              dntp_conc=dntp_conc, 
+                                                              dna_conc=dna_conc)
+                        
                         # 应用Matthews 2004模型调整热力学参数
                         adjusted_dg, adjusted_tm = adjust_thermodynamic_params(
-                            seq1, seq2, dimer.dg, diTm, simulation_temp, dna_conc)
+                            seq1, seq1, dime_self.dg, diTm_self, simulation_temp, dna_conc)
                         
                         results.append({
                             'seq1': sequences[i],
-                            'seq2': sequences[j],
+                            'seq2': sequences[i],
                             'Tm': adjusted_tm,
                             'deltaG': adjusted_dg,
-                            '结构': dimer.ascii_structure
+                            '结构': dime_self.ascii_structure
                         })
+
+                    for j in range(i + 1, len(sequences)):
+                        seq2 = dcP[sequences[j]]
+                        # 计算两序列间二聚体的Tm值，不传入simulation_temp参数
+                        diTm = primer3.calc_heterodimer_tm(seq1, seq2, 
+                                                         mv_conc=mv_conc, 
+                                                         dv_conc=dv_conc, 
+                                                         dntp_conc=dntp_conc, 
+                                                         dna_conc=dna_conc)
+
+                        dimer = primer3.calc_heterodimer(seq1, seq2, 
+                                                          mv_conc=mv_conc, 
+                                                          dv_conc=dv_conc, 
+                                                          dntp_conc=dntp_conc, 
+                                                          dna_conc=dna_conc, 
+                                                          temp_c=simulation_temp,
+                                                          output_structure=True)
+                        if dimer.dg < dg_threshold:
+                            # 应用Matthews 2004模型调整热力学参数
+                            adjusted_dg, adjusted_tm = adjust_thermodynamic_params(
+                                seq1, seq2, dimer.dg, diTm, simulation_temp, dna_conc)
+                            
+                            results.append({
+                                'seq1': sequences[i],
+                                'seq2': sequences[j],
+                                'Tm': adjusted_tm,
+                                'deltaG': adjusted_dg,
+                                '结构': dimer.ascii_structure
+                            })
 
             # 按deltaG值排序结果（由小到大）
             sorted_results = sorted(results, key=lambda x: x['deltaG'])
@@ -217,6 +341,8 @@ with col3:
             # 保存分析结果到session_state
             st.session_state.sorted_results = sorted_results
             st.session_state.analysis_done = True
+            
+            st.success(f"分析完成！找到 {len(sorted_results)} 个二聚体结构。")
     
     # 如果已经完成分析，显示结果
     if st.session_state.analysis_done:
