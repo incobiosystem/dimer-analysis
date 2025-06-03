@@ -191,8 +191,8 @@ with col1:
 
 # 中间列：上传文件和选择序列
 with col2:
-    st.subheader("上传需要分析的Excel文件")
-    uploaded_file = st.file_uploader("选择要分析的文件", type=["xlsx"])
+    st.subheader("上传需要分析的Excel或CSV文件")
+    uploaded_file = st.file_uploader("选择要分析的文件", type=["xlsx", "csv"])
     # 输入 deltaG 阈值
     dg_threshold = st.number_input("分析将输出deltaG小于以下值的二聚体 (默认 0 cal/mol)", value=0.0)
     # 输入模拟温度
@@ -205,17 +205,42 @@ with col2:
         dna_conc = st.number_input("DNA浓度 (nM)", value=50.0)
 
     if uploaded_file is not None:
-        df = pd.read_excel(uploaded_file)
+        # 根据文件类型读取数据
+        file_extension = uploaded_file.name.split('.')[-1].lower()
         
-        # 检查列名是否为name和sequence，如果不是，尝试使用物料名称和序列
-        if 'name' not in df.columns or 'sequence' not in df.columns:
-            if '物料名称' in df.columns and '序列' in df.columns:
-                # 重命名列
-                df = df.rename(columns={'物料名称': 'name', '序列': 'sequence'})
-                st.info("已将列名'物料名称'和'序列'重命名为'name'和'sequence'")
-            else:
-                st.error("Excel文件必须包含'name'和'sequence'列或'物料名称'和'序列'列")
-                st.stop()
+        if file_extension == 'csv':
+            df = pd.read_csv(uploaded_file)
+        else:  # xlsx
+            df = pd.read_excel(uploaded_file)
+        
+        # 将列名转换为小写以便不区分大小写比较
+        df.columns = [col.lower() for col in df.columns]
+        
+        # 创建列名映射字典
+        name_columns = ['name', 'material name', 'materialname', '物料名称', '物料', '名称']
+        sequence_columns = ['sequence', 'seq', '序列']
+        
+        # 检查是否存在name和sequence列（不区分大小写）
+        name_col = None
+        for col in name_columns:
+            if col in df.columns:
+                name_col = col
+                break
+                
+        seq_col = None
+        for col in sequence_columns:
+            if col in df.columns:
+                seq_col = col
+                break
+        
+        if name_col is not None and seq_col is not None:
+            # 如果列名不是标准的'name'和'sequence'，则重命名
+            if name_col != 'name' or seq_col != 'sequence':
+                df = df.rename(columns={name_col: 'name', seq_col: 'sequence'})
+                st.info(f"已将列名'{name_col}'和'{seq_col}'重命名为'name'和'sequence'")
+        else:
+            st.error("文件必须包含name/物料名称和sequence/序列列（不区分大小写）")
+            st.stop()
         
         # 处理简并碱基
         if st.session_state.expanded_df is None:
@@ -231,14 +256,26 @@ with col2:
                     
                     # 提供下载展开后的序列
                     buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                        expanded_df.to_excel(writer, index=False)
+                    
+                    # 根据原始文件类型决定下载文件的格式
+                    if file_extension == 'csv':
+                        csv_data = expanded_df.to_csv(index=False)
+                        buffer.write(csv_data.encode())
+                        download_filename = uploaded_file.name.replace('.csv', '_expanded.csv')
+                        mime_type = "text/csv"
+                    else:  # xlsx
+                        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                            expanded_df.to_excel(writer, index=False)
+                        download_filename = uploaded_file.name.replace('.xlsx', '_expanded.xlsx')
+                        mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    
+                    buffer.seek(0)
                     
                     st.download_button(
                         label="下载展开后的序列文件",
                         data=buffer.getvalue(),
-                        file_name=uploaded_file.name.replace('.xlsx', '_expanded.xlsx'),
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        file_name=download_filename,
+                        mime=mime_type
                     )
         else:
             expanded_df = st.session_state.expanded_df
