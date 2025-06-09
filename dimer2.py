@@ -31,14 +31,13 @@ def calculate_combination_score(sequences, target_map, dimer_results, max_accept
     for result in dimer_results:
         if result['seq1'] in sequences and result['seq2'] in sequences:
             combination_dimers.append(result['deltaG'])
-            # 检查是否超过可接受的阈值范围
-            if result['deltaG'] < min_acceptable_deltaG or result['deltaG'] < max_acceptable_deltaG:
-                problem_type = "过强" if result['deltaG'] < min_acceptable_deltaG else "较强"
+            # 检查是否低于用户设定的最小可接受deltaG值
+            if result['deltaG'] < min_acceptable_deltaG:
                 problematic_dimers.append({
                     'seq1': result['seq1'],
                     'seq2': result['seq2'],
                     'deltaG': result['deltaG'],
-                    'problem_type': problem_type
+                    'problem_type': '不符合要求'
                 })
     
     if not combination_dimers:
@@ -96,7 +95,175 @@ def generate_target_combinations(target_sequences, min_combination_size=1, max_c
     
     return all_combinations
 
-def optimize_combinations(expanded_df, dimer_results, max_combinations=10, max_acceptable_deltaG=-500.0, min_acceptable_deltaG=-5000.0, min_targets_per_well=2, max_targets_per_well=6, custom_target_combinations=None):
+def intelligent_well_assignment(targets, target_sequences, dimer_results, target_map, min_acceptable_deltaG=-3000.0, min_targets_per_well=1, max_targets_per_well=4, max_wells=4, max_iterations=10000000):
+    """
+    智能分配靶标到反应孔的算法
+    
+    Args:
+        targets: 所有靶标列表
+        target_sequences: 靶标到序列的映射
+        dimer_results: 二聚体分析结果
+        target_map: 序列到靶标的映射
+        max_acceptable_deltaG: 可接受的最大deltaG值（最负值）
+        min_targets_per_well: 单孔最小靶标数量
+        max_targets_per_well: 单孔最大靶标数量
+        max_wells: 最大孔数
+    
+    Returns:
+        list: 最优的孔分配方案
+    """
+    import random
+    from itertools import combinations
+    
+    # 创建dimer查找字典，加速查找
+    dimer_lookup = {}
+    for result in dimer_results:
+        key1 = (result['seq1'], result['seq2'])
+        key2 = (result['seq2'], result['seq1'])
+        dimer_lookup[key1] = result['deltaG']
+        dimer_lookup[key2] = result['deltaG']
+    
+    def get_dimer_deltaG(seq1, seq2):
+        """获取两个序列间的dimer deltaG值"""
+        return dimer_lookup.get((seq1, seq2), 0)
+    
+    def evaluate_well(target_list):
+        """评估一个孔内靶标组合的质量"""
+        sequences = []
+        for target in target_list:
+            sequences.extend(target_sequences[target])
+        
+        worst_deltaG = 0
+        problematic_count = 0
+        all_deltaGs = []
+        
+        # 计算所有序列对的dimer deltaG
+        for i in range(len(sequences)):
+            for j in range(i, len(sequences)):
+                deltaG = get_dimer_deltaG(sequences[i], sequences[j])
+                all_deltaGs.append(deltaG)
+                
+                if deltaG < min_acceptable_deltaG:
+                    problematic_count += 1
+                    if deltaG < worst_deltaG:
+                        worst_deltaG = deltaG
+        
+        avg_deltaG = sum(all_deltaGs) / len(all_deltaGs) if all_deltaGs else 0
+        
+        return {
+            'targets': target_list,
+            'sequences': sequences,
+            'worst_deltaG': worst_deltaG,
+            'avg_deltaG': avg_deltaG,
+            'problematic_count': problematic_count,
+            'is_valid': problematic_count == 0,
+            'score': problematic_count * 1000 + abs(worst_deltaG)  # 惩罚函数
+        }
+    
+    def generate_well_assignments(targets, num_wells):
+        """生成将靶标分配到指定数量孔的所有可能方案（优化版：基于deltaG质量分配）"""
+        if num_wells == 1:
+            # 允许最后一个孔包含任意数量的靶标（包括少于最小值的情况）
+            # 这样可以支持不均匀分配，如9个靶标分成4-4-1
+            if len(targets) <= max_targets_per_well:
+                return [[targets]]
+            else:
+                return []
+        
+        assignments = []
+        # 尝试不同的第一个孔的靶标组合（从min_targets_per_well个到max_targets_per_well个）
+        for well_size in range(min_targets_per_well, min(max_targets_per_well + 1, len(targets) - num_wells + 2)):
+            for first_well_targets in combinations(targets, well_size):
+                remaining_targets = [t for t in targets if t not in first_well_targets]
+                
+                # 确保剩余靶标数量不超过剩余孔数的最大容量
+                if len(remaining_targets) <= (num_wells - 1) * max_targets_per_well:
+                    # 递归分配剩余靶标
+                    sub_assignments = generate_well_assignments(remaining_targets, num_wells - 1)
+                    
+                    for sub_assignment in sub_assignments:
+                        full_assignment = [list(first_well_targets)] + sub_assignment
+                        assignments.append(full_assignment)
+        
+        return assignments
+    
+    # 生成所有可能的分配方案（优化版：基于deltaG质量评估）
+    best_assignments = []
+    calculation_count = 0
+    
+    for num_wells in range(1, min(max_wells + 1, len(targets) + 1)):
+        assignments = generate_well_assignments(targets, num_wells)
+        
+        for assignment in assignments:
+            calculation_count += 1
+            # 评估每个孔
+            well_evaluations = []
+            total_avg_deltaG = 0
+            worst_deltaG_overall = 0
+            all_valid = True
+            total_problematic = 0
+            
+            for well_targets in assignment:
+                well_eval = evaluate_well(well_targets)
+                well_evaluations.append(well_eval)
+                total_avg_deltaG += abs(well_eval['avg_deltaG'])
+                if well_eval['worst_deltaG'] < worst_deltaG_overall:
+                    worst_deltaG_overall = well_eval['worst_deltaG']
+                if not well_eval['is_valid']:
+                    all_valid = False
+                total_problematic += well_eval['problematic_count']
+            
+            # 新的评分策略：优先考虑deltaG质量
+            avg_deltaG_score = total_avg_deltaG / len(well_evaluations) if well_evaluations else 0
+            worst_deltaG_penalty = abs(worst_deltaG_overall) * 0.1
+            quality_score = avg_deltaG_score + worst_deltaG_penalty + total_problematic * 100
+            
+            assignment_result = {
+                'wells': well_evaluations,
+                'num_wells': num_wells,
+                'total_score': quality_score,  # 新的质量评分
+                'avg_deltaG_score': avg_deltaG_score,
+                'worst_deltaG_overall': worst_deltaG_overall,
+                'all_valid': all_valid,
+                'total_problematic': total_problematic
+            }
+            
+            best_assignments.append(assignment_result)
+    
+    # 存储计算次数到streamlit session state
+    try:
+        import streamlit as st
+        st.session_state.total_calculations = calculation_count
+    except:
+        pass
+    
+    # 调试信息：打印生成的分配方案数量
+    try:
+        import streamlit as st
+        st.write(f"🔍 调试信息：生成了 {len(best_assignments)} 个分配方案")
+        if len(best_assignments) == 0:
+            st.write(f"⚠️ 未生成任何分配方案，可能的原因：")
+            st.write(f"   - 靶标数量: {len(targets)}")
+            st.write(f"   - 最小靶标/孔: {min_targets_per_well}")
+            st.write(f"   - 最大靶标/孔: {max_targets_per_well}")
+            st.write(f"   - 最大孔数: {max_wells}")
+            st.write(f"   - 理论最少需要孔数: {math.ceil(len(targets) / max_targets_per_well)}")
+            if max_wells < math.ceil(len(targets) / max_targets_per_well):
+                st.error(f"⚠️ 最大孔数({max_wells})小于理论最少需要孔数({math.ceil(len(targets) / max_targets_per_well)})，请增加最大孔数！")
+    except:
+        pass
+    
+    # 排序：优先选择所有孔都有效的方案，然后按deltaG质量排序
+    best_assignments.sort(key=lambda x: (
+        not x['all_valid'],  # 优先选择所有孔都有效的方案
+        x['total_problematic'],  # 其次选择问题最少的方案
+        x['avg_deltaG_score'],  # 然后选择平均deltaG绝对值最小的方案
+        abs(x['worst_deltaG_overall'])  # 最后选择最差deltaG绝对值最小的方案
+    ))
+    
+    return best_assignments[:10]  # 返回前10个最优方案
+
+def optimize_combinations(expanded_df, dimer_results, max_combinations=10, max_acceptable_deltaG=-500.0, min_acceptable_deltaG=-5000.0, min_targets_per_well=1, max_targets_per_well=6, max_wells=8):
     """
     基于deltaG最小原则优化靶标组合
     
@@ -108,6 +275,7 @@ def optimize_combinations(expanded_df, dimer_results, max_combinations=10, max_a
         min_acceptable_deltaG: 可接受的最小deltaG值（最负值）
         min_targets_per_well: 单孔最小靶标数量
         max_targets_per_well: 单孔最大靶标数量
+        max_wells: 最大孔数
         custom_target_combinations: 用户指定的靶标组合字符串
     
     Returns:
@@ -133,58 +301,74 @@ def optimize_combinations(expanded_df, dimer_results, max_combinations=10, max_a
     if len(target_sequences) < 1:
         return []
     
-    # 处理用户指定的靶标组合
-    if custom_target_combinations and custom_target_combinations.strip():
-        all_combinations = []
-        lines = custom_target_combinations.strip().split('\n')
+    targets = list(target_sequences.keys())
+    
+    # 调试信息：打印靶标数量
+    try:
+        import streamlit as st
+        st.write(f"🔍 调试信息：检测到 {len(targets)} 个靶标")
+        st.write(f"📋 靶标列表：{targets[:10]}{'...' if len(targets) > 10 else ''}")
+    except:
+        pass
+    
+    # 使用智能分配算法
+    if len(targets) >= 4:  # 如果靶标数量较多，使用智能分配
+        well_assignments = intelligent_well_assignment(
+            targets,
+            target_sequences,
+            dimer_results,
+            target_map,
+            min_acceptable_deltaG,
+            min_targets_per_well,
+            max_targets_per_well,
+            max_wells=max_wells
+        )
         
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            target_names = [t.strip() for t in line.split(',') if t.strip()]
-            
-            # 检查靶标是否存在
-            valid_targets = []
-            all_sequences = []
-            
-            for target_name in target_names:
-                if target_name in target_sequences:
-                    valid_targets.append(target_name)
-                    all_sequences.extend(target_sequences[target_name])
-            
-            # 如果有效靶标数量大于等于1，添加到组合中
-            if len(valid_targets) >= 1:
-                all_combinations.append({
-                    'targets': valid_targets,
-                    'sequences': all_sequences
-                })
+        # 转换为原有格式
+        scored_combinations = []
+        for assignment in well_assignments:
+            for i, well in enumerate(assignment['wells']):
+                score = calculate_combination_score(
+                    well['sequences'], 
+                    target_map, 
+                    dimer_results,
+                    max_acceptable_deltaG,
+                    min_acceptable_deltaG
+                )
+                score['target_names'] = well['targets']
+                score['well_number'] = i + 1
+                score['assignment_id'] = assignment.get('assignment_id', 0)
+                score['total_wells'] = assignment['num_wells']
+                score['assignment_valid'] = assignment['all_valid']
+                scored_combinations.append(score)
+        
+        return scored_combinations[:max_combinations]
+        
     else:
-        # 生成所有可能的靶标组合
+        # 靶标数量较少时，使用原有的组合生成方法
         all_combinations = generate_target_combinations(
             target_sequences, 
             min_targets_per_well, 
             max_targets_per_well
         )
-    
-    # 计算每个组合的得分
-    scored_combinations = []
-    for combo in all_combinations:
-        score = calculate_combination_score(
-            combo['sequences'], 
-            target_map, 
-            dimer_results,
-            max_acceptable_deltaG,
-            min_acceptable_deltaG
-        )
-        score['target_names'] = combo['targets']
-        scored_combinations.append(score)
-    
-    # 按问题二聚体数量排序（越少越好），然后按平均deltaG由大到小排序（deltaG绝对值越大越好）
-    scored_combinations.sort(key=lambda x: (x['problematic_count'], -abs(x['average'])))
-    
-    return scored_combinations[:max_combinations]
+        
+        # 计算每个组合的得分
+        scored_combinations = []
+        for combo in all_combinations:
+            score = calculate_combination_score(
+                combo['sequences'], 
+                target_map, 
+                dimer_results,
+                max_acceptable_deltaG,
+                min_acceptable_deltaG
+            )
+            score['target_names'] = combo['targets']
+            scored_combinations.append(score)
+        
+        # 按问题二聚体数量排序（越少越好），然后按平均deltaG由大到小排序（deltaG绝对值越大越好）
+        scored_combinations.sort(key=lambda x: (x['problematic_count'], -abs(x['average'])))
+        
+        return scored_combinations[:max_combinations]
 
 # 简并碱基与其对应的可能碱基的映射
 degenerate_bases = {
@@ -373,63 +557,18 @@ with col1:
     # 添加计算逻辑简介在左下角
     st.markdown("---")
     
-    # 组合优化参数
-    st.markdown("<h3 style='font-size: 18px;'>🎯 组合优化参数</h3>", unsafe_allow_html=True)
-    
-    max_acceptable_deltaG = st.number_input(
-        "可接受的最大ΔG值 (cal/mol)", 
-        min_value=-10000.0, 
-        max_value=0.0, 
-        value=-3000.0, 
-        step=50.0,
-        help="组合中二聚体ΔG的最大可接受值（最负值），超过此值的二聚体将被标记为问题二聚体"
-    )
-    
-    min_acceptable_deltaG = st.number_input(
-        "可接受的最小ΔG值 (cal/mol)", 
-        min_value=-50000.0, 
-        max_value=-100.0, 
-        value=-5000.0, 
-        step=100.0,
-        help="组合中二聚体ΔG的最小可接受值（最负值），低于此值的二聚体将被认为过于稳定"
-    )
-    
-    max_targets_per_well = st.number_input(
-        "单孔最大靶标数量", 
-        min_value=1, 
-        max_value=20, 
-        value=4, 
-        step=1,
-        help="每个反应孔中允许的最大靶标数量"
-    )
-    
-    min_targets_per_well = st.number_input(
-        "单孔最小靶标数量", 
-        min_value=1, 
-        max_value=10, 
-        value=1, 
-        step=1,
-        help="每个反应孔中要求的最小靶标数量"
-    )
-    
-    max_combinations_to_show = st.number_input(
-        "显示组合方案数量", 
-        min_value=1, 
-        max_value=20, 
-        value=5, 
-        step=1,
-        help="显示前N个最优组合方案"
-    )
-    
-    # 用户指定靶标组合
-    st.markdown("**🎯 指定靶标组合（可选）**")
-    custom_target_combinations = st.text_area(
-        "手动指定要分析的靶标组合",
-        placeholder="例如：\nTarget1,Target2,Target3\nTarget4,Target5\nTarget1,Target6,Target7",
-        help="每行一个组合，靶标名称用逗号分隔。如果指定了组合，将优先分析这些组合而不是自动生成组合。"
-    )
+    # 计算逻辑简介
+    st.markdown("**🔬 计算逻辑简介**")
+    st.markdown("""
+    1. **简并碱基展开**: 自动识别并展开IUPAC简并碱基
+    2. **二聚体分析**: 使用Primer3算法计算所有序列对的二聚体结构
+    3. **智能合孔**: 基于ΔG阈值优化靶标分配到反应孔
+    """)
   
 
+
+# 初始化sequences变量在更外层作用域
+sequences = []
 
 # 中间列：上传文件和选择序列
 with col2:
@@ -543,7 +682,6 @@ with col2:
         else:
             expanded_df = st.session_state.expanded_df
 
-        sequences = []
         st.subheader("选择要分析的序列:")
         # 添加全选按钮
         select_all = st.checkbox("全选/取消全选")
@@ -649,93 +787,219 @@ with col3:
         # 检查是否有靶标信息
         has_target_info = 'target' in st.session_state.expanded_df.columns and not st.session_state.expanded_df['target'].isna().all()
         
-        # 如果有靶标信息，显示组合优化建议
+        # 如果有靶标信息，显示智能合孔方案
         if has_target_info:
-            st.markdown("<h3 style='font-size: 18px;'>🎯 靶标组合优化建议</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='font-size: 18px;'>🎯 智能合孔方案</h3>", unsafe_allow_html=True)
             
-            # 添加排序选项
-            sort_option = st.selectbox(
-                "选择排序方式：",
-                ["综合排序", "按平均deltaG排序", "按dimer数量排序"],
-                help="综合排序：先按问题二聚体数量，再按平均deltaG绝对值排序\n按平均deltaG排序：按平均deltaG从大到小排序（从最负到最正）\n按dimer数量排序：按二聚体总数量从少到多排序"
-            )
+            # 获取所有靶标
+            all_targets = st.session_state.expanded_df['target'].unique().tolist()
+            st.info(f"检测到 {len(all_targets)} 个靶标")
             
-            with st.spinner("正在计算最优组合..."):
-                optimized_combinations = optimize_combinations(
-                    st.session_state.expanded_df, 
-                    st.session_state.sorted_results,
-                    max_combinations=max_combinations_to_show,
-                    max_acceptable_deltaG=max_acceptable_deltaG,
-                    min_acceptable_deltaG=min_acceptable_deltaG,
-                    min_targets_per_well=min_targets_per_well,
-                    max_targets_per_well=max_targets_per_well,
-                    custom_target_combinations=custom_target_combinations
+            # 组合设计参数
+            st.markdown("**⚙️ 组合设计参数**")
+            col_param1, col_param2 = st.columns(2)
+            
+            with col_param1:
+                min_acceptable_deltaG = st.number_input(
+                    "最小可接受ΔG值 (cal/mol)", 
+                    min_value=-50000.0, 
+                    max_value=-100.0, 
+                    value=-5000.0, 
+                    step=100.0,
+                    help="组合中二聚体ΔG的最小可接受值（最负值）"
+                )
+                
+                max_targets_per_well = st.number_input(
+                    "单孔最大靶标数量", 
+                    min_value=1, 
+                    max_value=20, 
+                    value=4, 
+                    step=1,
+                    help="每个反应孔中允许的最大靶标数量"
                 )
             
-            if optimized_combinations:
-                # 根据选择的排序方式重新排序
-                if sort_option == "按平均deltaG排序":
-                    optimized_combinations.sort(key=lambda x: -x['average'])  # 从大到小（从最负到最正）
-                elif sort_option == "按dimer数量排序":
-                    optimized_combinations.sort(key=lambda x: x['count'])
-                # 综合排序保持原有逻辑（已在optimize_combinations函数中实现）
+            with col_param2:
+                min_targets_per_well = st.number_input(
+                    "单孔最小靶标数量", 
+                    min_value=1, 
+                    max_value=10, 
+                    value=3, 
+                    step=1,
+                    help="每个反应孔中要求的最小靶标数量"
+                )
                 
-                st.write(f"**基于{sort_option}的组合建议：**")
+                max_combinations_to_show = st.number_input(
+                    "显示方案数量", 
+                    min_value=1, 
+                    max_value=10, 
+                    value=5, 
+                    step=1,
+                    help="显示前N个最优合孔方案"
+                )
                 
-                # 显示最优组合
-                for i, combo in enumerate(optimized_combinations[:max_combinations_to_show], 1):
-                    # 根据问题二聚体数量设置标题颜色
-                    if combo['problematic_count'] == 0:
-                        title_color = "🟢"
-                        status = "推荐"
-                    elif combo['problematic_count'] <= 2:
-                        title_color = "🟡"
-                        status = "可考虑"
-                    else:
-                        title_color = "🔴"
-                        status = "不推荐"
+                max_wells = st.number_input(
+                    "最大孔数", 
+                    min_value=1, 
+                    max_value=50, 
+                    value=min(8, max(4, len(all_targets) // 3)), 
+                    step=1,
+                    help="允许使用的最大反应孔数量，会根据靶标数量自动调整默认值"
+                )
+            
+            # 开始合孔分析按钮
+            if st.button("🚀 开始合孔分析", type="primary"):
+                with st.spinner("正在计算最优合孔方案..."):
+                    import time
+                    start_time = time.time()
+                    st.session_state.optimized_combinations = optimize_combinations(
+                        st.session_state.expanded_df, 
+                        st.session_state.sorted_results,
+                        max_combinations=max_combinations_to_show,
+                        max_acceptable_deltaG=-3000.0,  # 固定值
+                        min_acceptable_deltaG=min_acceptable_deltaG,
+                        min_targets_per_well=min_targets_per_well,
+                        max_targets_per_well=max_targets_per_well,
+                        max_wells=max_wells
+                    )
+                    end_time = time.time()
+                    st.session_state.calculation_time = end_time - start_time
+                    st.session_state.calculation_count = getattr(st.session_state, 'total_calculations', 0)
+            
+            # 显示结果
+            if hasattr(st.session_state, 'optimized_combinations') and st.session_state.optimized_combinations:
+                # 检查是否使用了智能分配算法
+                if len(st.session_state.optimized_combinations) > 0 and 'total_wells' in st.session_state.optimized_combinations[0]:
+                    # 智能分配算法结果
+                    st.markdown("**📋 最优合孔方案**")
                     
-                    with st.expander(f"{title_color} 组合方案 {i}: {' + '.join(combo['target_names'])} ({status}) - 问题二聚体: {combo['problematic_count']}", expanded=(i==1)):
-                        col1, col2 = st.columns([1, 1])
+                    # 显示计算统计信息
+                    col_stats1, col_stats2 = st.columns(2)
+                    with col_stats1:
+                        if hasattr(st.session_state, 'calculation_time'):
+                            st.info(f"⏱️ 计算耗时: {st.session_state.calculation_time:.2f} 秒")
+                    with col_stats2:
+                        if hasattr(st.session_state, 'calculation_count'):
+                            st.info(f"🔢 计算次数: {st.session_state.calculation_count:,} 次")
+                    
+                    # 按分配方案分组
+                    assignment_groups = {}
+                    for combo in st.session_state.optimized_combinations:
+                        assignment_id = combo.get('assignment_id', 0)
+                        total_wells = combo.get('total_wells', 1)
+                        assignment_valid = combo.get('assignment_valid', False)
                         
-                        with col1:
-                            st.write("**靶标信息：**")
-                            for target in combo['target_names']:
-                                st.write(f"• {target}")
-                            
-                            st.write("**统计信息：**")
-                            st.write(f"• 二聚体数量: {combo['count']}")
-                            st.write(f"• 问题二聚体数量: {combo['problematic_count']} (ΔG < {max_acceptable_deltaG})")
-                            st.write(f"• 总ΔG: {combo['total']:.2f} cal/mol")
-                            st.write(f"• 平均ΔG: {combo['average']:.2f} cal/mol")
-                            st.write(f"• 最小ΔG: {combo['min']:.2f} cal/mol")
-                            st.write(f"• 最大ΔG: {combo['max']:.2f} cal/mol")
-                            
-                            # 显示问题二聚体详情
-                            if combo['problematic_count'] > 0:
-                                st.write("**⚠️ 问题二聚体详情：**")
-                                for dimer in combo['problematic_dimers']:
-                                    problem_type = dimer.get('problem_type', '未知')
-                                    if problem_type == '过强':
-                                        icon = "🔴"
-                                    elif problem_type == '较强':
-                                        icon = "🟡"
-                                    else:
-                                        icon = "⚠️"
-                                    st.write(f"• {icon} {dimer['seq1']} ↔ {dimer['seq2']}: {dimer['deltaG']:.2f} cal/mol ({problem_type})")
+                        if assignment_id not in assignment_groups:
+                            assignment_groups[assignment_id] = {
+                                'wells': [],
+                                'total_wells': total_wells,
+                                'assignment_valid': assignment_valid,
+                                'total_problematic': 0
+                            }
                         
-                        with col2:
-                            st.write("**包含的序列：**")
-                            for seq in combo['sequences']:
-                                target = next((t for t in combo['target_names'] 
-                                             if seq in [s for s in st.session_state.expanded_df[st.session_state.expanded_df['target']==t]['name'].tolist()]), '未知')
-                                st.write(f"• {seq} ({target})")
+                        assignment_groups[assignment_id]['wells'].append(combo)
+                        assignment_groups[assignment_id]['total_problematic'] += combo['problematic_count']
+                    
+                    # 创建方案概览表格
+                    scheme_data = []
+                    for assignment_id, assignment in assignment_groups.items():
+                        status = "✅ 推荐" if assignment['assignment_valid'] else ("⚠️ 可考虑" if assignment['total_problematic'] <= 5 else "❌ 不推荐")
+                        scheme_data.append({
+                            '方案': f"方案{assignment_id + 1}",
+                            '孔数': assignment['total_wells'],
+                            '状态': status,
+                            '问题二聚体总数': assignment['total_problematic']
+                        })
+                    
+                    if scheme_data:
+                        st.dataframe(pd.DataFrame(scheme_data), use_container_width=True)
+                    
+                    # 显示最佳方案的详细信息
+                    best_assignment = min(assignment_groups.items(), key=lambda x: x[1]['total_problematic'])
+                    assignment_id, assignment = best_assignment
+                    
+                    st.markdown(f"**详细分配方案 (方案{assignment_id + 1}):**")
+                    
+                    # 创建孔分配表格 - 去重显示
+                    well_data = []
+                    displayed_wells = set()
+                    for well in assignment['wells']:
+                        well_num = well.get('well_number', 1)
+                        if well_num not in displayed_wells:
+                            displayed_wells.add(well_num)
+                            status = "✅" if well['problematic_count'] == 0 else ("⚠️" if well['problematic_count'] <= 2 else "❌")
+                            
+                            well_data.append({
+                                '孔号': f"第{well_num}孔",
+                                '靶标': ' + '.join(well['target_names']),
+                                '序列数': len(well['sequences']),
+                                '问题二聚体': well['problematic_count'],
+                                '平均ΔG': f"{well['average']:.1f}",
+                                '最差ΔG': f"{well['min']:.1f}",
+                                '状态': status
+                            })
+                    
+                    if well_data:
+                        st.dataframe(pd.DataFrame(well_data), use_container_width=True)
+                    
+                    # 显示问题二聚体详情（如果有）
+                    all_problematic = []
+                    for well in assignment['wells']:
+                        for dimer in well['problematic_dimers']:
+                            all_problematic.append({
+                                '孔号': f"第{well.get('well_number', 1)}孔",
+                                '序列1': dimer['seq1'],
+                                '序列2': dimer['seq2'],
+                                'ΔG (cal/mol)': f"{dimer['deltaG']:.1f}",
+                                '问题类型': dimer['problem_type']
+                            })
+                    
+                    if all_problematic:
+                        st.markdown("**⚠️ 问题二聚体详情:**")
+                        st.dataframe(pd.DataFrame(all_problematic), use_container_width=True)
+                
+                else:
+                    # 传统组合算法结果
+                    st.markdown("**📋 最优组合方案**")
+                    
+                    # 创建组合概览表格
+                    combo_data = []
+                    for i, combo in enumerate(st.session_state.optimized_combinations[:max_combinations_to_show], 1):
+                        status = "✅ 推荐" if combo['problematic_count'] == 0 else ("⚠️ 可考虑" if combo['problematic_count'] <= 2 else "❌ 不推荐")
+                        combo_data.append({
+                            '方案': f"组合{i}",
+                            '靶标': ' + '.join(combo['target_names']),
+                            '序列数': len(combo['sequences']),
+                            '问题二聚体': combo['problematic_count'],
+                            '平均ΔG': f"{combo['average']:.1f}",
+                            '最差ΔG': f"{combo['min']:.1f}",
+                            '状态': status
+                        })
+                    
+                    if combo_data:
+                        st.dataframe(pd.DataFrame(combo_data), use_container_width=True)
+                    
+                    # 显示最佳组合的问题二聚体详情
+                    if st.session_state.optimized_combinations and st.session_state.optimized_combinations[0]['problematic_count'] > 0:
+                        best_combo = st.session_state.optimized_combinations[0]
+                        st.markdown("**⚠️ 问题二聚体详情:**")
+                        
+                        problem_data = []
+                        for dimer in best_combo['problematic_dimers']:
+                            problem_data.append({
+                                '序列1': dimer['seq1'],
+                                '序列2': dimer['seq2'],
+                                'ΔG (cal/mol)': f"{dimer['deltaG']:.1f}",
+                                '问题类型': dimer['problem_type']
+                            })
+                        
+                        if problem_data:
+                            st.dataframe(pd.DataFrame(problem_data), use_container_width=True)
                 
                 # 添加下载组合建议的功能
-                if len(optimized_combinations) > 0:
+                if len(st.session_state.optimized_combinations) > 0:
                     # 创建用于下载的DataFrame
                     combo_download_data = []
-                    for i, combo in enumerate(optimized_combinations, 1):
+                    for i, combo in enumerate(st.session_state.optimized_combinations, 1):
                         combo_download_data.append({
                             '组合编号': i,
                             '靶标组合': ' + '.join(combo['target_names']),
@@ -816,57 +1080,97 @@ with col3:
         
         # 添加下载分析结果的功能
         if len(filtered_results) > 0:
-            # 创建用于下载的DataFrame
-            download_data = []
-            for res in filtered_results:
-                download_data.append({
-                    '序列1': res['seq1'],
-                    '序列2': res['seq2'],
-                    'Tm (°C)': round(res['Tm'], 2),
-                    'ΔG (cal/mol)': round(res['deltaG'], 2),
-                    '二聚体结构': res['结构']
-                })
+            col_download1, col_download2 = st.columns(2)
             
-            download_df = pd.DataFrame(download_data)
-            
-            # 创建Excel文件的缓冲区
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                download_df.to_excel(writer, index=False, sheet_name='二聚体分析结果')
+            with col_download1:
+                # 创建用于下载的DataFrame
+                download_data = []
+                for res in filtered_results:
+                    download_data.append({
+                        '序列1': res['seq1'],
+                        '序列2': res['seq2'],
+                        'Tm (°C)': round(res['Tm'], 2),
+                        'ΔG (cal/mol)': round(res['deltaG'], 2),
+                        '二聚体结构': res['结构']
+                    })
                 
-                # 获取工作表对象以调整列宽
-                worksheet = writer.sheets['二聚体分析结果']
+                download_df = pd.DataFrame(download_data)
                 
-                # 自动调整列宽
-                for column in worksheet.columns:
-                    max_length = 0
-                    column_letter = column[0].column_letter
-                    for cell in column:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                        except:
-                            pass
-                    adjusted_width = min(max_length + 2, 50)  # 限制最大宽度为50
-                    worksheet.column_dimensions[column_letter].width = adjusted_width
+                # 创建Excel文件的缓冲区
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    download_df.to_excel(writer, index=False, sheet_name='二聚体分析结果')
+                    
+                    # 获取工作表对象以调整列宽
+                    worksheet = writer.sheets['二聚体分析结果']
+                    
+                    # 自动调整列宽
+                    for column in worksheet.columns:
+                        max_length = 0
+                        column_letter = column[0].column_letter
+                        for cell in column:
+                            try:
+                                if len(str(cell.value)) > max_length:
+                                    max_length = len(str(cell.value))
+                            except:
+                                pass
+                        adjusted_width = min(max_length + 2, 50)  # 限制最大宽度为50
+                        worksheet.column_dimensions[column_letter].width = adjusted_width
+                
+                buffer.seek(0)
+                
+                # 生成下载文件名
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                download_filename = f"二聚体分析结果_{timestamp}.xlsx"
+                
+                st.download_button(
+                    label="📥 下载二聚体分析结果 (Excel)",
+                    data=buffer.getvalue(),
+                    file_name=download_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    help="下载当前筛选条件下的所有二聚体分析结果"
+                )
             
-            buffer.seek(0)
-            
-            # 生成下载文件名
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            download_filename = f"二聚体分析结果_{timestamp}.xlsx"
-            
-            st.download_button(
-                label="📥 下载分析结果 (Excel格式)",
-                data=buffer.getvalue(),
-                file_name=download_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                help="下载当前筛选条件下的所有二聚体分析结果"
+            with col_download2:
+                # 创建CSV格式的下载
+                csv_data = download_df.to_csv(index=False, encoding='utf-8-sig')
+                csv_filename = f"二聚体分析结果_{timestamp}.csv"
+                
+                st.download_button(
+                    label="📥 下载二聚体分析结果 (CSV)",
+                    data=csv_data.encode('utf-8-sig'),
+                    file_name=csv_filename,
+                    mime="text/csv",
+                    help="下载当前筛选条件下的所有二聚体分析结果（CSV格式）"
+                )
+        
+        # 显示选项控制
+        col_display1, col_display2 = st.columns([2, 1])
+        with col_display1:
+            display_count = st.selectbox(
+                "显示结果数量:",
+                [50, 100, 200, 500, "全部"],
+                index=0,
+                help="选择要显示的二聚体结果数量，显示过多可能导致页面卡顿"
             )
         
+        with col_display2:
+            if len(filtered_results) > 50:
+                st.info(f"💡 为避免卡顿，默认显示前50个结果")
+        
+        # 确定要显示的结果数量
+        if display_count == "全部":
+            results_to_show = filtered_results
+        else:
+            results_to_show = filtered_results[:display_count]
+        
+        # 显示当前显示的结果数量
+        if len(results_to_show) < len(filtered_results):
+            st.write(f"当前显示: {len(results_to_show)} / {len(filtered_results)} 个结果")
+        
         # 显示筛选后的结果
-        for res in filtered_results:
+        for res in results_to_show:
             with st.container():
                 # 使用更紧凑的布局
                 st.markdown(f"**序列1**: {res['seq1']} | **序列2**: {res['seq2']}")
