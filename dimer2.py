@@ -95,7 +95,7 @@ def generate_target_combinations(target_sequences, min_combination_size=1, max_c
     
     return all_combinations
 
-def intelligent_well_assignment(targets, target_sequences, dimer_results, target_map, min_acceptable_deltaG=-3000.0, min_targets_per_well=1, max_targets_per_well=4, max_wells=4, max_iterations=10000000):
+def intelligent_well_assignment(targets, target_sequences, dimer_results, target_map, min_acceptable_deltaG=-3000.0, min_targets_per_well=1, max_targets_per_well=4, max_wells=4, max_iterations=1000000):
     """
     智能分配靶标到反应孔的算法
     
@@ -160,7 +160,7 @@ def intelligent_well_assignment(targets, target_sequences, dimer_results, target
             'score': problematic_count * 1000 + abs(worst_deltaG)  # 惩罚函数
         }
     
-    def generate_well_assignments(targets, num_wells):
+    def generate_well_assignments(targets, num_wells, max_combinations=200000):
         """生成将靶标分配到指定数量孔的所有可能方案（优化版：基于deltaG质量分配）"""
         if num_wells == 1:
             # 允许最后一个孔包含任意数量的靶标（包括少于最小值的情况）
@@ -173,17 +173,29 @@ def intelligent_well_assignment(targets, target_sequences, dimer_results, target
         assignments = []
         # 尝试不同的第一个孔的靶标组合（从min_targets_per_well个到max_targets_per_well个）
         for well_size in range(min_targets_per_well, min(max_targets_per_well + 1, len(targets) - num_wells + 2)):
+            # 添加剪枝：如果当前组合数已经足够，停止生成更多组合
+            if len(assignments) >= max_combinations:
+                break
+                
             for first_well_targets in combinations(targets, well_size):
                 remaining_targets = [t for t in targets if t not in first_well_targets]
                 
                 # 确保剩余靶标数量不超过剩余孔数的最大容量
                 if len(remaining_targets) <= (num_wells - 1) * max_targets_per_well:
                     # 递归分配剩余靶标
-                    sub_assignments = generate_well_assignments(remaining_targets, num_wells - 1)
+                    sub_assignments = generate_well_assignments(remaining_targets, num_wells - 1, max_combinations - len(assignments))
                     
                     for sub_assignment in sub_assignments:
                         full_assignment = [list(first_well_targets)] + sub_assignment
                         assignments.append(full_assignment)
+                        
+                        # 添加剪枝：如果已经生成足够的组合，停止
+                        if len(assignments) >= max_combinations:
+                            break
+                    
+                    # 如果已经生成足够的组合，跳出循环
+                    if len(assignments) >= max_combinations:
+                        break
         
         return assignments
     
@@ -191,11 +203,24 @@ def intelligent_well_assignment(targets, target_sequences, dimer_results, target
     best_assignments = []
     calculation_count = 0
     
+    # 添加性能优化：限制计算量
+    max_assignments_per_well_count = 200000  # 每个孔数最多评估200000个方案
+    
     for num_wells in range(1, min(max_wells + 1, len(targets) + 1)):
         assignments = generate_well_assignments(targets, num_wells)
         
+        # 限制每个孔数的方案数量，避免组合爆炸
+        if len(assignments) > max_assignments_per_well_count:
+            import random
+            assignments = random.sample(assignments, max_assignments_per_well_count)
+        
         for assignment in assignments:
             calculation_count += 1
+            
+            # 早期终止条件：如果计算量超过限制，停止计算
+            if calculation_count > max_iterations:
+                break
+                
             # 评估每个孔
             well_evaluations = []
             total_avg_deltaG = 0
@@ -229,6 +254,10 @@ def intelligent_well_assignment(targets, target_sequences, dimer_results, target
             }
             
             best_assignments.append(assignment_result)
+        
+        # 如果已经达到计算限制，跳出外层循环
+        if calculation_count > max_iterations:
+            break
     
     # 存储计算次数到streamlit session state
     try:
@@ -308,6 +337,16 @@ def optimize_combinations(expanded_df, dimer_results, max_combinations=10, max_a
         import streamlit as st
         st.write(f"🔍 调试信息：检测到 {len(targets)} 个靶标")
         st.write(f"📋 靶标列表：{targets[:10]}{'...' if len(targets) > 10 else ''}")
+        
+        # 估算计算复杂度并给出提示
+        estimated_combinations = 1
+        for i in range(1, min(max_wells + 1, len(targets) + 1)):
+            from math import comb
+            estimated_combinations += comb(len(targets), min(max_targets_per_well, len(targets)))
+        
+        if estimated_combinations > 10000:
+            st.warning(f"⚠️ 预计需要评估约 {estimated_combinations:,} 个组合，计算可能需要较长时间...")
+            st.info("💡 提示：可以减少最大孔数或最大靶标/孔数量来加快计算速度")
     except:
         pass
     
@@ -848,9 +887,21 @@ with col3:
             
             # 开始合孔分析按钮
             if st.button("🚀 开始合孔分析", type="primary"):
-                with st.spinner("正在计算最优合孔方案..."):
+                # 创建进度显示区域
+                progress_container = st.container()
+                with progress_container:
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    status_text.text("正在初始化计算...")
+                
+                try:
                     import time
                     start_time = time.time()
+                    
+                    # 更新进度
+                    progress_bar.progress(10)
+                    status_text.text("正在分析靶标组合...")
+                    
                     st.session_state.optimized_combinations = optimize_combinations(
                         st.session_state.expanded_df, 
                         st.session_state.sorted_results,
@@ -861,9 +912,22 @@ with col3:
                         max_targets_per_well=max_targets_per_well,
                         max_wells=max_wells
                     )
+                    
+                    # 完成计算
+                    progress_bar.progress(100)
+                    status_text.text("计算完成！")
+                    
                     end_time = time.time()
                     st.session_state.calculation_time = end_time - start_time
                     st.session_state.calculation_count = getattr(st.session_state, 'total_calculations', 0)
+                    
+                    # 清除进度显示
+                    time.sleep(1)
+                    progress_container.empty()
+                    
+                except Exception as e:
+                    st.error(f"计算过程中出现错误：{str(e)}")
+                    progress_container.empty()
             
             # 显示结果
             if hasattr(st.session_state, 'optimized_combinations') and st.session_state.optimized_combinations:
