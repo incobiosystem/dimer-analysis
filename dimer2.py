@@ -309,11 +309,13 @@ def optimize_combinations_with_ortools(expanded_df, dimer_results, min_acceptabl
     """
     try:
         from ortools.sat.python import cp_model
-        import streamlit as st
         import time
     except ImportError:
+        import streamlit as st
         st.error("请安装Google OR-Tools: pip install ortools")
         return []
+    
+    import streamlit as st
     
     if 'target' not in expanded_df.columns:
         return []
