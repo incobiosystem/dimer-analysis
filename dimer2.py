@@ -26,19 +26,32 @@ def calculate_combination_score(sequences, target_map, dimer_results, max_accept
     """
     combination_dimers = []
     problematic_dimers = []
+    inter_target_dimers = []  # 不同靶标间的dimer
     
     # 找出这个组合中所有相关的二聚体
     for result in dimer_results:
         if result['seq1'] in sequences and result['seq2'] in sequences:
             combination_dimers.append(result['deltaG'])
+            
+            # 检查是否为不同靶标间的dimer
+            target1 = target_map.get(result['seq1'], '未知')
+            target2 = target_map.get(result['seq2'], '未知')
+            if target1 != target2:
+                inter_target_dimers.append(result['deltaG'])
+            
             # 检查是否低于用户设定的最小可接受deltaG值
             if result['deltaG'] < min_acceptable_deltaG:
                 problematic_dimers.append({
                     'seq1': result['seq1'],
                     'seq2': result['seq2'],
                     'deltaG': result['deltaG'],
-                    'problem_type': '不符合要求'
+                    'problem_type': '不符合要求',
+                    'structure': result.get('结构', '')  # 添加结构信息
                 })
+    
+    # 计算不同靶标间dimer的统计信息
+    inter_target_avg = sum(inter_target_dimers) / len(inter_target_dimers) if inter_target_dimers else 0
+    inter_target_worst = min(inter_target_dimers) if inter_target_dimers else 0
     
     if not combination_dimers:
         return {
@@ -50,7 +63,9 @@ def calculate_combination_score(sequences, target_map, dimer_results, max_accept
             'sequences': sequences,
             'targets': [target_map.get(seq, '未知') for seq in sequences],
             'problematic_dimers': [],
-            'problematic_count': 0
+            'problematic_count': 0,
+            'inter_target_avg_deltaG': 0,
+            'inter_target_worst_deltaG': 0
         }
     
     return {
@@ -62,7 +77,9 @@ def calculate_combination_score(sequences, target_map, dimer_results, max_accept
         'sequences': sequences,
         'targets': [target_map.get(seq, '未知') for seq in sequences],
         'problematic_dimers': problematic_dimers,
-        'problematic_count': len(problematic_dimers)
+        'problematic_count': len(problematic_dimers),
+        'inter_target_avg_deltaG': inter_target_avg,
+        'inter_target_worst_deltaG': inter_target_worst
     }
 
 def generate_target_combinations(target_sequences, min_combination_size=1, max_combination_size=5):
@@ -307,12 +324,37 @@ def optimize_combinations_with_ortools(expanded_df, dimer_results, min_acceptabl
     Returns:
         list: 最优的组合建议
     """
+    import streamlit as st
+    
     try:
         from ortools.sat.python import cp_model
         import time
     except ImportError:
-        import streamlit as st
-        st.error("请安装Google OR-Tools: pip install ortools")
+        st.error("❌ 缺少依赖库：Google OR-Tools")
+        st.markdown("""
+        **解决方案：**
+        
+        1. **本地环境安装：**
+           ```bash
+           pip install ortools
+           ```
+        
+        2. **Streamlit Cloud 部署：**
+           - 在项目根目录创建 `requirements.txt` 文件
+           - 添加以下内容：
+             ```
+             streamlit
+             pandas
+             biopython
+             primer3-py
+             ortools
+             openpyxl
+             ```
+           - 重新部署应用
+        
+        3. **其他云平台：**
+           - 确保在部署配置中包含 `ortools` 依赖
+        """)
         return []
     
     import streamlit as st
@@ -1213,6 +1255,8 @@ with col3:
                                 '问题二聚体': well['problematic_count'],
                                 '平均ΔG': f"{well['average']:.1f}",
                                 '最差ΔG': f"{well['min']:.1f}",
+                                '不同靶标间平均ΔG': f"{well.get('inter_target_avg_deltaG', 0):.1f}",
+                                '不同靶标间最差ΔG': f"{well.get('inter_target_worst_deltaG', 0):.1f}",
                                 '状态': status
                             })
                     
@@ -1228,7 +1272,8 @@ with col3:
                                 '序列1': dimer['seq1'],
                                 '序列2': dimer['seq2'],
                                 'ΔG (cal/mol)': f"{dimer['deltaG']:.1f}",
-                                '问题类型': dimer['problem_type']
+                                '问题类型': dimer['problem_type'],
+                                '结构': dimer.get('structure', '')
                             })
                     
                     if all_problematic:
@@ -1250,6 +1295,8 @@ with col3:
                             '问题二聚体': combo['problematic_count'],
                             '平均ΔG': f"{combo['average']:.1f}",
                             '最差ΔG': f"{combo['min']:.1f}",
+                            '不同靶标间平均ΔG': f"{combo.get('inter_target_avg_deltaG', 0):.1f}",
+                            '不同靶标间最差ΔG': f"{combo.get('inter_target_worst_deltaG', 0):.1f}",
                             '状态': status
                         })
                     
@@ -1267,7 +1314,8 @@ with col3:
                                 '序列1': dimer['seq1'],
                                 '序列2': dimer['seq2'],
                                 'ΔG (cal/mol)': f"{dimer['deltaG']:.1f}",
-                                '问题类型': dimer['problem_type']
+                                '问题类型': dimer['problem_type'],
+                                '结构': dimer.get('structure', '')
                             })
                         
                         if problem_data:
@@ -1277,6 +1325,8 @@ with col3:
                 if len(st.session_state.optimized_combinations) > 0:
                     # 创建用于下载的DataFrame
                     combo_download_data = []
+                    problematic_download_data = []
+                    
                     for i, combo in enumerate(st.session_state.optimized_combinations, 1):
                         combo_download_data.append({
                             '组合编号': i,
@@ -1286,21 +1336,39 @@ with col3:
                             '总ΔG (cal/mol)': round(combo['total'], 2),
                             '平均ΔG (cal/mol)': round(combo['average'], 2),
                             '最小ΔG (cal/mol)': round(combo['min'], 2),
-                            '最大ΔG (cal/mol)': round(combo['max'], 2)
+                            '最大ΔG (cal/mol)': round(combo['max'], 2),
+                            '不同靶标间平均ΔG (cal/mol)': round(combo.get('inter_target_avg_deltaG', 0), 2),
+                            '不同靶标间最差ΔG (cal/mol)': round(combo.get('inter_target_worst_deltaG', 0), 2),
+                            '问题二聚体数量': combo['problematic_count']
                         })
+                        
+                        # 收集问题二聚体详情
+                        for dimer in combo.get('problematic_dimers', []):
+                            problematic_download_data.append({
+                                '组合编号': i,
+                                '序列1': dimer['seq1'],
+                                '序列2': dimer['seq2'],
+                                'ΔG (cal/mol)': round(dimer['deltaG'], 2),
+                                '问题类型': dimer['problem_type'],
+                                '结构': dimer.get('structure', '')
+                            })
                     
                     combo_download_df = pd.DataFrame(combo_download_data)
+                    problematic_download_df = pd.DataFrame(problematic_download_data)
                     
                     # 创建Excel文件的缓冲区
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        # 写入组合优化建议工作表
                         combo_download_df.to_excel(writer, index=False, sheet_name='组合优化建议')
                         
-                        # 获取工作表对象以调整列宽
-                        worksheet = writer.sheets['组合优化建议']
+                        # 写入问题二聚体详情工作表（如果有数据）
+                        if not problematic_download_df.empty:
+                            problematic_download_df.to_excel(writer, index=False, sheet_name='问题二聚体详情')
                         
-                        # 自动调整列宽
-                        for column in worksheet.columns:
+                        # 调整组合优化建议工作表的列宽
+                        worksheet1 = writer.sheets['组合优化建议']
+                        for column in worksheet1.columns:
                             max_length = 0
                             column_letter = column[0].column_letter
                             for cell in column:
@@ -1310,7 +1378,22 @@ with col3:
                                 except:
                                     pass
                             adjusted_width = min(max_length + 2, 50)
-                            worksheet.column_dimensions[column_letter].width = adjusted_width
+                            worksheet1.column_dimensions[column_letter].width = adjusted_width
+                        
+                        # 调整问题二聚体详情工作表的列宽（如果存在）
+                        if not problematic_download_df.empty:
+                            worksheet2 = writer.sheets['问题二聚体详情']
+                            for column in worksheet2.columns:
+                                max_length = 0
+                                column_letter = column[0].column_letter
+                                for cell in column:
+                                    try:
+                                        if len(str(cell.value)) > max_length:
+                                            max_length = len(str(cell.value))
+                                    except:
+                                        pass
+                                adjusted_width = min(max_length + 2, 50)
+                                worksheet2.column_dimensions[column_letter].width = adjusted_width
                     
                     buffer.seek(0)
                     
