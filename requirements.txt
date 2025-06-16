@@ -1,5 +1,6 @@
-streamlit
-primer3-py
-pandas
-biopython
-openpyxl
+streamlit>=1.28.0
+pandas>=1.5.0
+biopython>=1.81
+primer3-py>=0.6.1
+ortools>=9.7.0
+openpyxl>=3.1.0
